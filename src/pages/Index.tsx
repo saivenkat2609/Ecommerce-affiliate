@@ -10,8 +10,8 @@ const Index = () => {
       <Header />
       <main>
         <HeroSection />
+        {/* <ProductGrid /> */}
         <TodaysDeals />
-        <ProductGrid />
         <PriceAlerts />
       </main>
     </div>

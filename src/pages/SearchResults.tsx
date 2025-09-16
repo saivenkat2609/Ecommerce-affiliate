@@ -57,10 +57,12 @@ const SearchResults = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [totalResults, setTotalResults] = useState(0);
-  const [sortBy, setSortBy] = useState<string>("relevance");
+  const [sortBy, setSortBy] = useState<string>("trending");
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMoreResults, setHasMoreResults] = useState(true);
+  const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
+  const [manuallyAppendingResults, setManuallyAppendingResults] = useState(false);
 
   // Filter state
   const [filters, setFilters] = useState<Filters>({
@@ -134,35 +136,69 @@ const SearchResults = () => {
 
   useEffect(() => {
     if (query) {
+      // Reset to page 1 for new searches (when query, category, searchIndex, filters or sortBy changes)
+      setCurrentPage(1);
       performSearch(query, category, searchIndex);
     }
-  }, [query, category, searchIndex, currentPage]);
+  }, [query, category, searchIndex, filters, sortBy]);
 
-  // Apply filters whenever filters or originalProducts change
+  // Apply filters whenever filters or originalProducts change (for client-side fallback)
   useEffect(() => {
+    // Skip re-sorting if we're in the middle of loading more products or manually appending
+    if (isLoadingMoreProducts || manuallyAppendingResults) {
+      return;
+    }
+
     const filtered = filterProducts(originalProducts, filters);
     const sorted = sortProducts(filtered, sortBy);
     setFilteredProducts(sorted);
-  }, [filters, originalProducts, sortBy]);
+  }, [originalProducts, filters, sortBy, isLoadingMoreProducts, manuallyAppendingResults]);
 
   const performSearch = async (keywords: string, categoryFilter = "", searchIndexFilter = "") => {
     if (!keywords.trim()) return;
 
     setLoading(true);
     setError(null);
+    setIsLoadingMoreProducts(false); // Reset the flag for new searches
+    setManuallyAppendingResults(false); // Reset manual appending flag
 
     try {
       let url = "";
+      const params = new URLSearchParams();
+
+      // Base parameters with increased result count
+      params.set('keywords', keywords);
+      params.set('itemCount', '20'); // Increased from 10 to 20
+      params.set('page', currentPage.toString());
+
+      // Add filter parameters
+      if (filters.priceRange[0] > 0) {
+        params.set('minPrice', filters.priceRange[0].toString());
+      }
+      if (filters.priceRange[1] < 50000) {
+        params.set('maxPrice', filters.priceRange[1].toString());
+      }
+      if (filters.brands.length > 0) {
+        params.set('brand', filters.brands[0]);
+      }
+      if (filters.minRating > 0) {
+        params.set('minRating', filters.minRating.toString());
+      }
+      // Add sortBy parameter for backend processing
+      if (sortBy) {
+        params.set('sortBy', sortBy);
+      }
 
       if (categoryFilter) {
         // Search within a specific category
-        url = `http://localhost:3001/api/search/category/${categoryFilter}?keywords=${encodeURIComponent(keywords)}&itemCount=10&page=${currentPage}`;
+        url = `http://localhost:3001/api/search/category/${categoryFilter}?${params.toString()}`;
       } else if (searchIndexFilter) {
         // Search within a specific search index
-        url = `http://localhost:3001/api/search?keywords=${encodeURIComponent(keywords)}&searchIndex=${searchIndexFilter}&itemCount=10&page=${currentPage}`;
+        params.set('searchIndex', searchIndexFilter);
+        url = `http://localhost:3001/api/search?${params.toString()}`;
       } else {
         // General search
-        url = `http://localhost:3001/api/search?keywords=${encodeURIComponent(keywords)}&itemCount=10&page=${currentPage}`;
+        url = `http://localhost:3001/api/search?${params.toString()}`;
       }
 
       console.log(`Searching for: "${keywords}"`);
@@ -196,10 +232,20 @@ const SearchResults = () => {
         }));
 
         setOriginalProducts(formattedProducts);
-        setTotalResults(data.totalResults || formattedProducts.length);
-        // Filtered products will be set by the useEffect
-        setCurrentPage(data.currentPage || 1);
-        setHasMoreResults(data.hasMoreResults || false); // Use API response to determine if more results exist
+        const apiTotalResults = data.totalResults || formattedProducts.length;
+        setTotalResults(apiTotalResults);
+
+        const apiCurrentPage = data.currentPage || 1;
+        setCurrentPage(apiCurrentPage);
+
+        // Calculate hasMoreResults based on actual data and pagination limits
+        const resultsPerPage = 20;
+        const maxPages = 10; // Amazon's limit
+        const hasMorePagesAvailable = apiCurrentPage < maxPages && (apiCurrentPage * resultsPerPage) < apiTotalResults;
+        const backendSaysHasMore = data.hasMoreResults !== undefined ? data.hasMoreResults : false;
+
+        // Show load more if either condition suggests more results exist
+        setHasMoreResults(hasMorePagesAvailable || backendSaysHasMore);
       } else {
         console.warn('No products returned from search API:', data);
         setOriginalProducts([]);
@@ -225,18 +271,46 @@ const SearchResults = () => {
 
     try {
       setLoadingMore(true);
+      setIsLoadingMoreProducts(true);
+      setManuallyAppendingResults(true);
       const nextPage = currentPage + 1;
 
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       let url = "";
+      const params = new URLSearchParams();
+
+      // Base parameters
+      params.set('keywords', query);
+      params.set('itemCount', '8');
+      params.set('page', nextPage.toString());
+
+      // Add filter parameters
+      if (filters.priceRange[0] > 0) {
+        params.set('minPrice', filters.priceRange[0].toString());
+      }
+      if (filters.priceRange[1] < 50000) {
+        params.set('maxPrice', filters.priceRange[1].toString());
+      }
+      if (filters.brands.length > 0) {
+        params.set('brand', filters.brands[0]);
+      }
+      if (filters.minRating > 0) {
+        params.set('minRating', filters.minRating.toString());
+      }
+      // Add sortBy parameter for backend processing
+      if (sortBy) {
+        params.set('sortBy', sortBy);
+      }
+
       if (category) {
-        url = `http://localhost:3001/api/search/category/${category}?keywords=${encodeURIComponent(query)}&itemCount=8&page=${nextPage}`;
+        url = `http://localhost:3001/api/search/category/${category}?${params.toString()}`;
       } else if (searchIndex) {
-        url = `http://localhost:3001/api/search?keywords=${encodeURIComponent(query)}&searchIndex=${searchIndex}&itemCount=8&page=${nextPage}`;
+        params.set('searchIndex', searchIndex);
+        url = `http://localhost:3001/api/search?${params.toString()}`;
       } else {
-        url = `http://localhost:3001/api/search?keywords=${encodeURIComponent(query)}&itemCount=8&page=${nextPage}`;
+        url = `http://localhost:3001/api/search?${params.toString()}`;
       }
 
       console.log(`Loading more search results for: "${query}", page: ${nextPage}`);
@@ -270,13 +344,28 @@ const SearchResults = () => {
         const newProducts = [...originalProducts, ...formattedProducts];
         setOriginalProducts(newProducts);
 
-        // Apply current sort to new combined products
-        const sortedProducts = sortProducts(newProducts, sortBy);
-        setProducts(sortedProducts);
+        // For load more, append new products to existing filtered products to preserve order
+        const filteredNewProducts = filterProducts(formattedProducts, filters);
+        const sortedNewProducts = sortProducts(filteredNewProducts, sortBy);
+        const newFilteredProducts = [...filteredProducts, ...sortedNewProducts];
+        setFilteredProducts(newFilteredProducts);
 
         setCurrentPage(data.currentPage || nextPage);
-        setTotalResults(prev => prev + formattedProducts.length);
-        setHasMoreResults(data.hasMoreResults || false);
+        // Don't add to totalResults - it should remain the same total count from Amazon
+        // setTotalResults(prev => prev + formattedProducts.length); // This was causing the issue
+        const apiTotalResults = data.totalResults || totalResults; // Use backend total or keep existing
+        if (apiTotalResults > totalResults) {
+          setTotalResults(apiTotalResults); // Only update if backend provides a higher number
+        }
+
+        // Calculate if more results are available
+        const resultsPerPage = 20;
+        const maxPages = 10;
+        const currentPageNum = data.currentPage || nextPage;
+        const hasMorePagesAvailable = currentPageNum < maxPages && (currentPageNum * resultsPerPage) < apiTotalResults;
+        const backendSaysHasMore = data.hasMoreResults !== undefined ? data.hasMoreResults : false;
+
+        setHasMoreResults(hasMorePagesAvailable || backendSaysHasMore);
       } else {
         setHasMoreResults(false);
       }
@@ -285,6 +374,8 @@ const SearchResults = () => {
       setError('Failed to load more search results');
     } finally {
       setLoadingMore(false);
+      setIsLoadingMoreProducts(false);
+      setManuallyAppendingResults(false);
     }
   };
 
@@ -314,9 +405,23 @@ const SearchResults = () => {
           if (!a.isNew && b.isNew) return 1;
           return b.id.localeCompare(a.id);
         });
+      case "bestseller":
+        return sortedProducts.sort((a, b) => {
+          // Bestseller: prioritize high rating and high review count
+          const scoreA = (a.rating * 0.4) + (Math.log(a.reviews + 1) * 0.6);
+          const scoreB = (b.rating * 0.4) + (Math.log(b.reviews + 1) * 0.6);
+          return scoreB - scoreA;
+        });
+      case "trending":
+        return sortedProducts.sort((a, b) => {
+          // Trending: prioritize new items and deals
+          const scoreA = (a.isNew ? 5 : 0) + (a.priceChange ? 3 : 0) + (a.rating * 0.2);
+          const scoreB = (b.isNew ? 5 : 0) + (b.priceChange ? 3 : 0) + (b.rating * 0.2);
+          return scoreB - scoreA;
+        });
       case "relevance":
       default:
-        return originalProducts; // Return original order for relevance
+        return originalProducts; // Return original order for relevance (backend handles this)
     }
   };
 
@@ -398,10 +503,12 @@ const SearchResults = () => {
                     onChange={handleSortChange}
                     className="px-3 py-2 border rounded-md text-sm bg-background"
                   >
-                    <option value="relevance">Sort by: Relevance</option>
+                    <option value="trending">Sort by: Trending</option>
+                    <option value="bestseller">Bestsellers</option>
+                    <option value="relevance">Relevance</option>
+                    <option value="rating">Customer Rating</option>
                     <option value="price-low">Price: Low to High</option>
                     <option value="price-high">Price: High to Low</option>
-                    <option value="rating">Customer Rating</option>
                     <option value="newest">Newest First</option>
                   </select>
                 </div>

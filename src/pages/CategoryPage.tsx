@@ -63,10 +63,12 @@ const CategoryPage = () => {
   const [originalProducts, setOriginalProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<string>("featured");
+  const [sortBy, setSortBy] = useState<string>("trending");
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMoreProducts, setHasMoreProducts] = useState(true);
+  const [lastKey, setLastKey] = useState<any>(null);
+  const [manuallyAppendingResults, setManuallyAppendingResults] = useState(false);
 
   // Filter state
   const [filters, setFilters] = useState<Filters>({
@@ -95,10 +97,53 @@ const CategoryPage = () => {
     "todays-deals": "🔥",
   };
 
-  // Note: Client-side filtering removed - PA-API handles all filtering server-side
+  // Sort functionality for DynamoDB data (client-side)
+  const sortProducts = (products: Product[], sortType: string): Product[] => {
+    const sortedProducts = [...products];
 
-  // Use originalProducts directly since filtering is done by PA-API server-side
-  const products = originalProducts;
+    switch (sortType) {
+      case "price-low":
+        return sortedProducts.sort((a, b) => {
+          const priceA = a.price || 0;
+          const priceB = b.price || 0;
+          return priceA - priceB;
+        });
+      case "price-high":
+        return sortedProducts.sort((a, b) => {
+          const priceA = a.price || 0;
+          const priceB = b.price || 0;
+          return priceB - priceA;
+        });
+      case "rating":
+        return sortedProducts.sort((a, b) => b.rating - a.rating);
+      case "newest":
+        return sortedProducts.sort((a, b) => {
+          // Sort by isNew first, then by updatedAt/createdAt
+          if (a.isNew && !b.isNew) return -1;
+          if (!a.isNew && b.isNew) return 1;
+          return b.id.localeCompare(a.id);
+        });
+      case "bestseller":
+        return sortedProducts.sort((a, b) => {
+          // Bestseller: prioritize high rating and high review count
+          const scoreA = (a.rating * 0.4) + (Math.log(a.reviews + 1) * 0.6);
+          const scoreB = (b.rating * 0.4) + (Math.log(b.reviews + 1) * 0.6);
+          return scoreB - scoreA;
+        });
+      case "trending":
+        return sortedProducts.sort((a, b) => {
+          // Trending: prioritize new items and deals
+          const scoreA = (a.isNew ? 5 : 0) + (a.priceChange ? 3 : 0) + (a.rating * 0.2);
+          const scoreB = (b.isNew ? 5 : 0) + (b.priceChange ? 3 : 0) + (b.rating * 0.2);
+          return scoreB - scoreA;
+        });
+      default:
+        return sortedProducts; // Return original order for default
+    }
+  };
+
+  // Apply sorting to products (skip sorting when manually appending to avoid disruption)
+  const products = manuallyAppendingResults ? originalProducts : sortProducts(originalProducts, sortBy);
 
   // Reset to page 1 when filters change
   useEffect(() => {
@@ -106,6 +151,8 @@ const CategoryPage = () => {
     console.log('New filters:', filters);
     console.log('New sortBy:', sortBy);
     setCurrentPage(1);
+    setLastKey(null);
+    setManuallyAppendingResults(false);
   }, [
     sortBy,
     // Track individual filter properties to ensure useEffect triggers
@@ -124,6 +171,7 @@ const CategoryPage = () => {
       setLoading(true);
       setError(null);
       setHasMoreProducts(true);
+      setManuallyAppendingResults(false);
 
       try {
         // Map category to appropriate keywords for PA-API search
@@ -167,8 +215,16 @@ const CategoryPage = () => {
 
         console.log('Final query params:', queryParams.toString());
 
+        const queryParamsDB = new URLSearchParams({
+          limit: '100'
+        });
+
+        if (lastKey) {
+          queryParamsDB.append('lastKey', JSON.stringify(lastKey));
+        }
+
         const response = await fetch(
-          `http://localhost:3001/api/search/category/${category}?${queryParams.toString()}`
+          `http://localhost:3001/api/db/category/${category}/products?${queryParamsDB.toString()}`
         );
 
         if (!response.ok) {
@@ -210,8 +266,8 @@ const CategoryPage = () => {
           );
 
           setOriginalProducts(formattedProducts);
-          setCurrentPage(data.currentPage || 1);
-          setHasMoreProducts(data.hasMoreResults || false);
+          setLastKey(data.lastKey || null);
+          setHasMoreProducts(data.hasMore || false);
         } else {
           console.warn("No products returned from category API:", data);
           setOriginalProducts([]);
@@ -250,53 +306,23 @@ const CategoryPage = () => {
 
     try {
       setLoadingMore(true);
-      const nextPage = currentPage + 1;
-
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setManuallyAppendingResults(true);
 
       console.log(
-        `Loading more products for category: ${category}, page: ${nextPage}`
+        `Loading more products for category: ${category} with lastKey:`,
+        lastKey
       );
 
-      // Use the same keywords logic as the initial load
-      const categoryKeywords: { [key: string]: string } = {
-        electronics: "electronics",
-        fashion: "fashion clothing",
-        "home-garden": "home kitchen garden",
-        sports: "sports fitness",
-        books: "books",
-        "todays-deals": "deals"
-      };
-
-      const searchKeywords = categoryKeywords[category] || category;
-
-      // Build query parameters including filters for load more
-      const queryParams = new URLSearchParams({
-        itemCount: '8',
-        keywords: searchKeywords,
-        page: nextPage.toString()
+      const queryParamsDB = new URLSearchParams({
+        limit: '100'
       });
 
-      // Add current filter parameters
-      if (filters.priceRange[0] > 0) {
-        queryParams.append('minPrice', filters.priceRange[0].toString());
-      }
-      if (filters.priceRange[1] < 50000) {
-        queryParams.append('maxPrice', filters.priceRange[1].toString());
-      }
-      if (filters.brands.length > 0) {
-        filters.brands.forEach(brand => queryParams.append('brand', brand));
-      }
-      if (filters.minRating > 0) {
-        queryParams.append('minRating', filters.minRating.toString());
-      }
-      if (sortBy !== 'featured') {
-        queryParams.append('sortBy', sortBy);
+      if (lastKey) {
+        queryParamsDB.append('lastKey', JSON.stringify(lastKey));
       }
 
       const response = await fetch(
-        `http://localhost:3001/api/search/category/${category}?${queryParams.toString()}`
+        `http://localhost:3001/api/db/category/${category}/products?${queryParamsDB.toString()}`
       );
 
       if (!response.ok) {
@@ -308,9 +334,7 @@ const CategoryPage = () => {
       if (data.success && data.products && data.products.length > 0) {
         const formattedProducts: Product[] = data.products.map(
           (product: any, index: number) => ({
-            id: `${
-              product.id || product.asin || category
-            }-page${nextPage}-${index}`,
+            id: product.id || product.asin || `${category}-more-${index}`,
             asin: product.asin,
             title: product.title || "Unknown Product",
             price: product.price,
@@ -334,8 +358,8 @@ const CategoryPage = () => {
         const newProducts = [...originalProducts, ...formattedProducts];
         setOriginalProducts(newProducts);
 
-        setCurrentPage(data.currentPage || nextPage);
-        setHasMoreProducts(data.hasMoreResults || false);
+        setLastKey(data.lastKey || null);
+        setHasMoreProducts(data.hasMore || false);
       } else {
         setHasMoreProducts(false);
       }
@@ -344,6 +368,7 @@ const CategoryPage = () => {
       setError("Failed to load more products");
     } finally {
       setLoadingMore(false);
+      setManuallyAppendingResults(false);
     }
   };
 
@@ -424,11 +449,12 @@ const CategoryPage = () => {
                     onChange={handleSortChange}
                     className="px-3 py-2 border rounded-md text-sm bg-background"
                   >
-                    <option value="featured">Sort by: Featured</option>
+                    <option value="trending">Sort by: Trending</option>
                     <option value="price-low">Price: Low to High</option>
                     <option value="price-high">Price: High to Low</option>
                     <option value="rating">Customer Rating</option>
                     <option value="newest">Newest First</option>
+                    <option value="bestseller">Bestsellers</option>
                   </select>
                 </div>
               </div>
@@ -611,7 +637,7 @@ const CategoryPage = () => {
                             Loading More...
                           </>
                         ) : (
-                          `Load More Products (Page ${currentPage + 1})`
+                          `Load More Products`
                         )}
                       </Button>
                     </div>

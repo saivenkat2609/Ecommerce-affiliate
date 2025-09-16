@@ -21,16 +21,31 @@ interface Product {
   detailPageURL?: string;
 }
 
+interface Filters {
+  priceRange: [number, number];
+  categories: string[];
+  brands: string[];
+  minRating: number;
+  features: string[];
+}
+
 const ProductGrid = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
-  const [originalProducts, setOriginalProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<string>("featured");
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMoreProducts, setHasMoreProducts] = useState(true);
+  const [filters, setFilters] = useState<Filters>({
+    priceRange: [0, 50000],
+    categories: [],
+    brands: [],
+    minRating: 0,
+    features: []
+  });
+  const [searchQuery, setSearchQuery] = useState("deals");
 
   const fallbackProducts: Product[] = [
     {
@@ -112,96 +127,55 @@ const ProductGrid = () => {
     }
   ];
 
-  useEffect(() => {
-    const fetchProducts = async (reset = true) => {
-      try {
-        if (reset) {
-          setLoading(true);
-          setCurrentPage(1);
-        } else {
-          setLoadingMore(true);
-        }
-        setError(null);
+  // Build API URL for deals endpoint with filters
+  const buildApiUrl = (reset = true, pageNum = 1) => {
+    const baseUrl = 'http://localhost:3001/api/deals';
+    const params = new URLSearchParams();
 
-        const response = await fetch('http://localhost:3001/api/products/sample');
+    params.set('itemCount', '10');
+    params.set('page', pageNum.toString());
+    params.set('sortBy', sortBy);
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+    // Add price filters if not default
+    if (filters.priceRange[0] > 0) {
+      params.set('minPrice', filters.priceRange[0].toString());
+    }
+    if (filters.priceRange[1] < 50000) {
+      params.set('maxPrice', filters.priceRange[1].toString());
+    }
 
-        const data = await response.json();
+    // Add brand filter (PA-API takes only first brand)
+    if (filters.brands.length > 0) {
+      params.set('brand', filters.brands[0]);
+    }
 
-        if (data.success && data.products && data.products.length > 0) {
-          const formattedProducts: Product[] = data.products.map((product: any) => ({
-            id: product.id || product.asin,
-            asin: product.asin,
-            title: product.title || 'Unknown Product',
-            price: product.price,
-            originalPrice: product.originalPrice,
-            rating: product.rating || 0,
-            reviews: product.reviews || 0,
-            image: product.image || '📦',
-            isNew: false,
-            priceChange: null,
-            features: ["Amazon Product"],
-            detailPageURL: product.detailPageURL
-          }));
+    // Add rating filter
+    if (filters.minRating > 0) {
+      params.set('minRating', filters.minRating.toString());
+    }
 
-          if (reset) {
-            setProducts(formattedProducts);
-            setOriginalProducts(formattedProducts);
-          } else {
-            // For ProductGrid, we'll simulate additional products by duplicating with new IDs
-            const additionalProducts = formattedProducts.map((product, index) => ({
-              ...product,
-              id: `${product.id}-page${currentPage}-${index}`,
-              title: `${product.title} (More Results)`
-            }));
-            setProducts(prev => [...prev, ...additionalProducts]);
-            setOriginalProducts(prev => [...prev, ...additionalProducts]);
-          }
+    // Add category filter for deals (optional)
+    if (filters.categories.length > 0) {
+      params.set('category', filters.categories[0]);
+    }
 
-          // Simulate having more products available (in real scenario, this would come from API)
-          setHasMoreProducts(currentPage < 3); // Allow up to 3 pages for demo
-        } else {
-          console.warn('No products returned from API, using fallback products');
-          const productsToSet = reset ? fallbackProducts : [];
-          setProducts(productsToSet);
-          setOriginalProducts(productsToSet);
-          setHasMoreProducts(false);
-        }
-      } catch (error) {
-        console.error('Failed to fetch products:', error);
-        setError('Failed to load products from Amazon API');
-        if (reset) {
-          setProducts(fallbackProducts);
-          setOriginalProducts(fallbackProducts);
-        }
-        setHasMoreProducts(false);
-      } finally {
-        if (reset) {
-          setLoading(false);
-        } else {
-          setLoadingMore(false);
-        }
-      }
-    };
+    return `${baseUrl}?${params.toString()}`;
+  };
 
-    fetchProducts(true);
-  }, []);
-
-  // Load more products function
-  const handleLoadMore = async () => {
-    if (loadingMore || !hasMoreProducts) return;
-
+  const fetchProducts = async (reset = true, pageNum = 1) => {
     try {
-      setLoadingMore(true);
-      const nextPage = currentPage + 1;
+      if (reset) {
+        setLoading(true);
+        setCurrentPage(1);
+      } else {
+        setLoadingMore(true);
+      }
+      setError(null);
 
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const apiUrl = buildApiUrl(reset, pageNum);
+      console.log('Fetching products with filters:', apiUrl);
 
-      const response = await fetch('http://localhost:3001/api/products/sample');
+      const response = await fetch(apiUrl);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -210,80 +184,91 @@ const ProductGrid = () => {
       const data = await response.json();
 
       if (data.success && data.products && data.products.length > 0) {
-        const formattedProducts: Product[] = data.products.map((product: any, index: number) => ({
-          id: `${product.id || product.asin}-page${nextPage}-${index}`,
+        const formattedProducts: Product[] = data.products.map((product: any) => ({
+          id: product.id || product.asin,
           asin: product.asin,
-          title: `${product.title || 'Unknown Product'} (Page ${nextPage})`,
+          title: product.title || 'Unknown Product',
           price: product.price,
           originalPrice: product.originalPrice,
           rating: product.rating || 0,
           reviews: product.reviews || 0,
           image: product.image || '📦',
-          isNew: Math.random() > 0.7, // Randomly mark some as new
-          priceChange: Math.random() > 0.6 ? (Math.random() > 0.5 ? 'down' : 'up') : null,
-          priceChangeAmount: Math.floor(Math.random() * 50) + 5,
-          features: ["Amazon Product"],
+          isNew: product.isNew || false,
+          priceChange: product.priceChange || null,
+          priceChangeAmount: product.priceChangeAmount,
+          features: product.features || ["Amazon Product"],
           detailPageURL: product.detailPageURL
         }));
 
-        const newProducts = [...originalProducts, ...formattedProducts];
-        setOriginalProducts(newProducts);
+        if (reset) {
+          setProducts(formattedProducts);
+        } else {
+          setProducts(prev => [...prev, ...formattedProducts]);
+        }
 
-        // Apply current sort to new combined products
-        const sortedProducts = sortProducts(newProducts, sortBy);
-        setProducts(sortedProducts);
-
-        setCurrentPage(nextPage);
-        setHasMoreProducts(nextPage < 3); // Limit to 3 pages for demo
+        setHasMoreProducts(data.hasMoreResults || false);
+        setCurrentPage(pageNum);
       } else {
+        console.warn('No products returned from API, using fallback products');
+        const productsToSet = reset ? fallbackProducts : [];
+        setProducts(reset ? productsToSet : prev => prev);
         setHasMoreProducts(false);
       }
     } catch (error) {
-      console.error('Failed to load more products:', error);
-      setError('Failed to load more products');
+      console.error('Failed to fetch products:', error);
+      setError('Failed to load products from Amazon API');
+      if (reset) {
+        setProducts(fallbackProducts);
+      }
+      setHasMoreProducts(false);
     } finally {
-      setLoadingMore(false);
+      if (reset) {
+        setLoading(false);
+      } else {
+        setLoadingMore(false);
+      }
     }
   };
 
-  // Sort functionality
-  const sortProducts = (products: Product[], sortType: string): Product[] => {
-    const sortedProducts = [...products];
+  // Initial fetch and when sort changes (deals don't depend on search query)
+  useEffect(() => {
+    console.log('Initial load or sort changed, fetching deals and promotional products');
+    fetchProducts(true, 1);
+  }, [sortBy]);
 
-    switch (sortType) {
-      case "price-low":
-        return sortedProducts.sort((a, b) => {
-          const priceA = a.price || 0;
-          const priceB = b.price || 0;
-          return priceA - priceB;
-        });
-      case "price-high":
-        return sortedProducts.sort((a, b) => {
-          const priceA = a.price || 0;
-          const priceB = b.price || 0;
-          return priceB - priceA;
-        });
-      case "rating":
-        return sortedProducts.sort((a, b) => b.rating - a.rating);
-      case "newest":
-        return sortedProducts.sort((a, b) => {
-          // Sort by isNew first, then by id for consistency
-          if (a.isNew && !b.isNew) return -1;
-          if (!a.isNew && b.isNew) return 1;
-          return b.id.localeCompare(a.id);
-        });
-      case "featured":
-      default:
-        return originalProducts; // Return original order for featured
+  // Only fetch when filters are explicitly applied (not on every filter change)
+  useEffect(() => {
+    // Skip initial render and only fetch when filters are actually applied
+    if (JSON.stringify(filters) !== JSON.stringify({
+      priceRange: [0, 50000],
+      categories: [],
+      brands: [],
+      minRating: 0,
+      features: []
+    })) {
+      console.log('Filters applied, refetching products:', filters);
+      fetchProducts(true, 1);
     }
+  }, [filters]);
+
+  // Load more products function
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMoreProducts) return;
+    const nextPage = currentPage + 1;
+    await fetchProducts(false, nextPage);
+  };
+
+  // Handle filter changes
+  const handleFiltersChange = (newFilters: Filters) => {
+    console.log('ProductGrid: Filters changed to:', newFilters);
+    setFilters(newFilters);
   };
 
   // Handle sort change
   const handleSortChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newSortBy = e.target.value;
+    console.log('ProductGrid: Sort changed to:', newSortBy);
     setSortBy(newSortBy);
-    const sortedProducts = sortProducts(originalProducts, newSortBy);
-    setProducts(sortedProducts);
   };
 
   return (
@@ -292,7 +277,10 @@ const ProductGrid = () => {
         <div className="flex gap-6">
           {/* Filters Sidebar - Desktop */}
           <div className="hidden lg:block w-80 shrink-0">
-            <FilterSidebar />
+            <FilterSidebar
+              filters={filters}
+              onFiltersChange={handleFiltersChange}
+            />
           </div>
 
           {/* Main Content */}
@@ -301,14 +289,22 @@ const ProductGrid = () => {
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6">
               <div>
                 <h3 className="text-2xl font-bold text-foreground mb-1">
-                  Products
+                  Deals & Offers
                 </h3>
                 <p className="text-muted-foreground">
                   {loading
-                    ? "Loading products..."
-                    : `Showing ${products.length} results`}
+                    ? "Loading deals and promotional products..."
+                    : `Showing ${products.length} deals and offers`}
                   {error && (
                     <span className="text-red-500 ml-2">({error})</span>
+                  )}
+                  {/* Show applied filters indicator */}
+                  {(filters.priceRange[0] > 0 || filters.priceRange[1] < 50000 ||
+                    filters.brands.length > 0 || filters.categories.length > 0 ||
+                    filters.minRating > 0 || filters.features.length > 0) && (
+                    <span className="text-blue-600 ml-2 text-sm">
+                      (Filters Applied)
+                    </span>
                   )}
                 </p>
               </div>
@@ -342,7 +338,7 @@ const ProductGrid = () => {
             {loading && (
               <div className="flex justify-center items-center py-20">
                 <Loader2 className="h-8 w-8 animate-spin" />
-                <span className="ml-2">Loading products...</span>
+                <span className="ml-2">Loading deals and promotional products...</span>
               </div>
             )}
 
@@ -511,7 +507,7 @@ const ProductGrid = () => {
                 {!hasMoreProducts && products.length > 0 && (
                   <div className="text-center mt-8">
                     <p className="text-muted-foreground">
-                      You've reached the end of our product catalog
+                      You've reached the end of our deals and promotional offers
                     </p>
                   </div>
                 )}
@@ -524,7 +520,11 @@ const ProductGrid = () => {
         {showFilters && (
           <div className="fixed inset-0 bg-black/50 z-50 lg:hidden">
             <div className="fixed right-0 top-0 h-full w-80 bg-background overflow-y-auto">
-              <FilterSidebar onClose={() => setShowFilters(false)} />
+              <FilterSidebar
+                filters={filters}
+                onFiltersChange={handleFiltersChange}
+                onClose={() => setShowFilters(false)}
+              />
             </div>
           </div>
         )}
